@@ -61,6 +61,7 @@ class TransPipelineModel():
 		self.header_write_flag = -1
 		self.peptide_or_gene_master_table = {}
 		self.peptide_or_gene_master_table_zeros_removed = {}
+		self.peptide_or_gene_master_table_median_represent = {}
 		self.statistics_table_fold_change = {}
 		self.statistics_table_TTest = {}
 
@@ -163,6 +164,7 @@ class TransPipelineController:
 		TPC_model_OBJ.ParseTable()
 		self.TPC_view = TransPipelineView()
 
+	##############      Main processing function     ######################
 	def process(self, TPC_model_OBJ):
 		############# Remove zero entries #################
 		print "before removing zero entries", len(TPC_model_OBJ.peptide_or_gene_master_table)
@@ -174,6 +176,19 @@ class TransPipelineController:
 		print "after removing zero entries", len(TPC_model_OBJ.peptide_or_gene_master_table_zeros_removed)
 		##PrintTableMedianLog2(peptide_or_gene_master_table_zeros_removed)
 		self.TPC_view.PrintTable(TPC_model_OBJ.peptide_or_gene_master_table_zeros_removed, '2_zeros_removed.txt')
+		
+		
+		############# Obtain median accross all replicates before normalization #################
+		self.ObtainMedianAcrossReplicates(TPC_model_OBJ)		
+		WFile = open('3_0_median_per_entry.txt','w')
+		WFile.write('gene')
+		for channel in xrange(0,TPC_model_OBJ.Num_channels):
+			WFile.write('\tchannel_'+str(channel+1))
+		WFile.write('\n')
+		WFile.close()
+		self.TPC_view.PrintTable(TPC_model_OBJ.peptide_or_gene_master_table_median_represent, '3_0_median_per_entry.txt')
+		#for i in xrange(0,len(TPC_model_OBJ.peptide_or_gene_master_table_median_represent)):
+		#print scipy.stats.zscore(TPC_model_OBJ.peptide_or_gene_master_table_median_represent)
 
 		############# Normanlization #################
 		if TPC_model_OBJ.Quantification_method.upper() == "SILAC":
@@ -182,24 +197,326 @@ class TransPipelineController:
 			self.TMTNormalization(TPC_model_OBJ)
 		##PrintTable_light_med(peptide_or_gene_master_table_zeros_removed)
 		self.TPC_view.PrintTable(TPC_model_OBJ.peptide_or_gene_master_table_zeros_removed, '3_normalized.txt')
-
+		
+		############# Obtain median accross all replicates #################
+		self.ObtainMedianAcrossReplicates(TPC_model_OBJ)		
+		WFile = open('3_1_normalized_and_median_per_entry.txt','w')
+		WFile.write('gene')
+		for channel in xrange(0,TPC_model_OBJ.Num_channels):
+			WFile.write('\tchannel_'+str(channel+1))
+		WFile.write('\n')
+		WFile.close()
+		self.TPC_view.PrintTable(TPC_model_OBJ.peptide_or_gene_master_table_median_represent, '3_1_normalized_and_median_per_entry.txt')
+		
 		############# Calculate Fold Change #################
-		#CalculateFoldChange(statistics_table_fold_change,0,1)
 		self.CalculateFoldChangeFromList(TPC_model_OBJ)
 		self.TPC_view.PrintTableFoldChange(TPC_model_OBJ.statistics_table_fold_change, '5_fold_change.txt')
-
+		
 		############# Convert all abundance to log2 #################
 		#self.Log2Transform(TPC_model_OBJ)
-		self.Log2TransformPlusOne(TPC_model_OBJ)
-		self.TPC_view.PrintTable(TPC_model_OBJ.peptide_or_gene_master_table_zeros_removed, '6_log2.txt')
-
+		#self.Log2TransformPlusOne(TPC_model_OBJ)
+		#self.TPC_view.PrintTable(TPC_model_OBJ.peptide_or_gene_master_table_zeros_removed, '6_log2.txt')
+		
 		############# TTest #################
-		#scipy.stats.ttest_ind(rvs1,rvs2)
 		#CalculateTTest(statistics_table_TTest,0,1)
 		self.CalculateTTestFromList(TPC_model_OBJ)
-		#statistics_table_TTest.sort()
-
+		#TPC_model_OBJ.statistics_table_TTest.sort()
 		self.TPC_view.PrintTablePValue(TPC_model_OBJ.statistics_table_TTest, '8_t_test.txt')
+
+
+
+		############# Running R script for volcano plot #################
+		RTableFile = open('9_R_table_volcano.txt','w')
+		RTableFile.write('gene\tlog2FoldChange\tpvalue\n')
+		for i in TPC_model_OBJ.statistics_table_TTest:
+			#print i, statistics_table_fold_change[i]
+			#RTableFile.write(i+"\t"+str(math.log(TPC_model_OBJ.statistics_table_fold_change[i],2))+'\t'+str(TPC_model_OBJ.statistics_table_TTest[i][1])+'\n')
+			RTableFile.write(i+"\t"+str(TPC_model_OBJ.statistics_table_fold_change[i])+'\t'+str(TPC_model_OBJ.statistics_table_TTest[i][1])+'\n')
+		RTableFile.close()
+		#make R script
+		R_txt = '''
+		pdf(file="volcano_plot.pdf")
+		res <- read.table(\"9_R_table_volcano.txt\", header=TRUE)
+		'''
+		# qvalue adjust
+		R_txt += 'res$pvalue <- p.adjust(res$pvalue, "BH")\n'
+		R_txt += '''
+		with(res, plot(log2FoldChange, -log10(pvalue), pch=20, main="Volcano plot", xlim=c(-10,10), ylim=c(0,8)))
+		x  <- seq(-10, 10, 0.05)
+		y <- x*0-log(0.05,10)
+		lines(x,y,col="green")
+		y <- x*0-log(0.01,10)
+		lines(x,y,col="red")
+		'''
+		RScriptFile = open('9_R_script_volcano.r','w')
+		RScriptFile.write(R_txt)
+		RScriptFile.close()	
+		cmd_line_str = "Rscript " + '9_R_script_volcano.r'
+		os.system(cmd_line_str)
+
+
+
+		############# Running R script for clustering and PCA #################
+		#make R script for clustering
+		R_txt = '''
+		pdf(file="clustering_pca.pdf")
+		library(pheatmap)
+		res <- read.table(\"3_0_median_per_entry.txt\", header=TRUE)
+		'''
+		#res_sub <- res[,2:]
+		R_txt += 'res_sub <- res[,2:' + str(TPC_model_OBJ.Num_channels+1) + ']\n'
+		R_txt += 'res_sub <- log2(res_sub+1)\n'
+		#pheatmap(res[,2:4])
+		#R_txt += 'pheatmap(res[,2:' + str(TPC_model_OBJ.Num_channels+1) + '])\n'
+		R_txt += 'pheatmap(res_sub)\n'
+		#res_corr = cor(res)
+		#R_txt += 'res_corr <- cor(res[,2:' + str(TPC_model_OBJ.Num_channels+1) + '])\n'
+		R_txt += 'res_corr <- cor(res_sub)\n'
+		R_txt += 'pheatmap(res_corr)\n'
+		#make R script for PCA
+		R_txt += 'library(ggbiplot)\n'
+		R_txt += 'res_sub_t <- t(res_sub)\n'
+		R_txt += 'res_pca <- prcomp(res_sub_t, center=TRUE, scale=TRUE)\n'
+		R_txt += 'scores <- data.frame(rownames(res_sub_t), res_pca$x[,1:3])\n'
+		R_txt += 'qplot(x=PC1, y=PC2, data=scores) + geom_text(label=rownames(res_sub_t))\n'
+		RScriptFile = open('10_R_clustering_script.r','w')
+		RScriptFile.write(R_txt)
+		RScriptFile.close()	
+		cmd_line_str = "Rscript " + '10_R_clustering_script.r'
+		os.system(cmd_line_str)
+
+
+
+	def	RemoveNonIdentifiedEntriesSILAC(self, TPC_model_OBJ):
+		for i in TPC_model_OBJ.peptide_or_gene_master_table:
+			cnt_zero = 0
+			tmp_check_light_zero = -1
+			for j in xrange(0,len(TPC_model_OBJ.peptide_or_gene_master_table[i])):
+				tmp_check_zero = sum(TPC_model_OBJ.peptide_or_gene_master_table[i][j])
+				if tmp_check_zero == 0.0:
+					cnt_zero += 1
+				# if light channel abundence value is 0 we skip it, because we are going to normalize by light channel
+				if float(TPC_model_OBJ.peptide_or_gene_master_table[i][j][0]) == 0.0:
+					tmp_check_light_zero = 1
+			#if cnt_zero < Num_replicate-1 and tmp_check_light_zero == -1:
+			if cnt_zero == 0 and tmp_check_light_zero == -1:
+				TPC_model_OBJ.peptide_or_gene_master_table_zeros_removed[i] = TPC_model_OBJ.peptide_or_gene_master_table[i]
+
+	def	RemoveNonIdentifiedEntriesTMT(self, TPC_model_OBJ):
+		for i in TPC_model_OBJ.peptide_or_gene_master_table:
+			cnt_zero = 0
+			tmp_check_light_zero = -1
+			for j in xrange(0,len(TPC_model_OBJ.peptide_or_gene_master_table[i])):
+				tmp_check_zero = sum(TPC_model_OBJ.peptide_or_gene_master_table[i][j])
+				if TPC_model_OBJ.result_file_names_and_channels[0][1] == -1 and tmp_check_zero == 1.0:
+					cnt_zero += 1
+				elif tmp_check_zero == 0.0:
+					cnt_zero += 1
+				# if the first channel abundence value is 0 we skip it, because we are going to normalize by the first channel
+				if float(TPC_model_OBJ.peptide_or_gene_master_table[i][j][0]) == 0.0:
+					tmp_check_light_zero = 1
+			#if cnt_zero < Num_replicate-1 and tmp_check_light_zero == -1:
+			if cnt_zero == 0 and tmp_check_light_zero == -1:
+				TPC_model_OBJ.peptide_or_gene_master_table_zeros_removed[i] = TPC_model_OBJ.peptide_or_gene_master_table[i]
+
+	def	SILACNormalization(self, TPC_model_OBJ):
+		# Divide by light for each row
+		for i in TPC_model_OBJ.peptide_or_gene_master_table_zeros_removed:
+			for j in xrange(0,len(TPC_model_OBJ.peptide_or_gene_master_table[i])):
+				tmp_norm = float(TPC_model_OBJ.peptide_or_gene_master_table[i][j][0])
+				for jj in xrange(0,len(TPC_model_OBJ.peptide_or_gene_master_table[i][j])):
+					TPC_model_OBJ.peptide_or_gene_master_table[i][j][jj] = float(TPC_model_OBJ.peptide_or_gene_master_table[i][j][jj]) / tmp_norm
+
+		# Divide by median for each col
+		tmp_all_abun_per_channel = []
+		for i in xrange(0,TPC_model_OBJ.Num_channels):
+			tmp_empty = []
+			tmp_all_abun_per_channel.append(tmp_empty)
+		for i in TPC_model_OBJ.peptide_or_gene_master_table_zeros_removed:
+			for j in xrange(0,len(TPC_model_OBJ.peptide_or_gene_master_table[i])):
+				for jj in xrange(0,len(TPC_model_OBJ.peptide_or_gene_master_table[i][j])):
+					tmp_all_abun_per_channel[jj].append(TPC_model_OBJ.peptide_or_gene_master_table[i][j][jj])
+		median_per_channel = []
+		for i in xrange(0,TPC_model_OBJ.Num_channels):
+			tmp_med = np.median(tmp_all_abun_per_channel[i])
+			#tmp_med = np.mean(tmp_all_abun_per_channel[i])
+			median_per_channel.append(tmp_med)
+		#print "median_per_channel",median_per_channel
+
+		for i in TPC_model_OBJ.peptide_or_gene_master_table_zeros_removed:
+			for j in xrange(0,len(TPC_model_OBJ.peptide_or_gene_master_table[i])):
+				for jj in xrange(0,len(TPC_model_OBJ.peptide_or_gene_master_table[i][j])):
+					TPC_model_OBJ.peptide_or_gene_master_table[i][j][jj] = float(TPC_model_OBJ.peptide_or_gene_master_table[i][j][jj]) / float(median_per_channel[jj])
+
+	def	TMTNormalization(self, TPC_model_OBJ):
+		# Divide by the first channel for each row
+		
+		for i in TPC_model_OBJ.peptide_or_gene_master_table_zeros_removed:
+			for j in xrange(0,len(TPC_model_OBJ.peptide_or_gene_master_table[i])):
+				tmp_norm = float(TPC_model_OBJ.peptide_or_gene_master_table[i][j][0])
+				for jj in xrange(0,len(TPC_model_OBJ.peptide_or_gene_master_table[i][j])):
+					TPC_model_OBJ.peptide_or_gene_master_table[i][j][jj] = float(TPC_model_OBJ.peptide_or_gene_master_table[i][j][jj]) / tmp_norm
+
+		# Divide by median for each col
+		tmp_all_abun_per_channel = []
+		for i in xrange(0,TPC_model_OBJ.Num_channels):
+			tmp_empty = []
+			tmp_all_abun_per_channel.append(tmp_empty)
+		for i in TPC_model_OBJ.peptide_or_gene_master_table_zeros_removed:
+			for j in xrange(0,len(TPC_model_OBJ.peptide_or_gene_master_table[i])):
+				for jj in xrange(0,len(TPC_model_OBJ.peptide_or_gene_master_table[i][j])):
+					tmp_all_abun_per_channel[jj].append(TPC_model_OBJ.peptide_or_gene_master_table[i][j][jj])
+		median_per_channel = []
+		for i in xrange(0,TPC_model_OBJ.Num_channels):
+			tmp_med = np.median(tmp_all_abun_per_channel[i])
+			#tmp_med = np.mean(tmp_all_abun_per_channel[i])
+			median_per_channel.append(tmp_med)
+		#print "median_per_channel",median_per_channel
+
+		for i in TPC_model_OBJ.peptide_or_gene_master_table_zeros_removed:
+			for j in xrange(0,len(TPC_model_OBJ.peptide_or_gene_master_table[i])):
+				for jj in xrange(0,len(TPC_model_OBJ.peptide_or_gene_master_table[i][j])):
+					TPC_model_OBJ.peptide_or_gene_master_table[i][j][jj] = float(TPC_model_OBJ.peptide_or_gene_master_table[i][j][jj]) / float(median_per_channel[jj])
+
+		'''
+		for i in TPC_model_OBJ.peptide_or_gene_master_table_zeros_removed:
+			for j in xrange(0,len(TPC_model_OBJ.peptide_or_gene_master_table[i])):
+				#this is dividing by median across channel
+				tmp_norm_list = []
+				for jj in xrange(0,len(TPC_model_OBJ.peptide_or_gene_master_table[i][j])):
+					tmp_norm_list.append(float(TPC_model_OBJ.peptide_or_gene_master_table[i][j][jj]))
+				tmp_norm = np.median(tmp_norm_list)
+
+				if tmp_norm == 0.0:
+					tmp_norm = 0.1
+				for jj in xrange(0,len(TPC_model_OBJ.peptide_or_gene_master_table[i][j])):
+					TPC_model_OBJ.peptide_or_gene_master_table[i][j][jj] = float(TPC_model_OBJ.peptide_or_gene_master_table[i][j][jj]) / tmp_norm
+
+		# Calculate median for each col
+		tmp_all_abun_per_channel = []
+		for i in xrange(0,TPC_model_OBJ.Num_channels):
+			tmp_empty = []
+			tmp_all_abun_per_channel.append(tmp_empty)
+		for i in TPC_model_OBJ.peptide_or_gene_master_table_zeros_removed:
+			for j in xrange(0,len(TPC_model_OBJ.peptide_or_gene_master_table[i])):
+				for jj in xrange(0,len(TPC_model_OBJ.peptide_or_gene_master_table[i][j])):
+					tmp_all_abun_per_channel[jj].append(TPC_model_OBJ.peptide_or_gene_master_table[i][j][jj])
+		median_per_channel = []
+		for i in xrange(0,TPC_model_OBJ.Num_channels):
+			tmp_med = np.median(tmp_all_abun_per_channel[i])
+			#tmp_med = np.mean(tmp_all_abun_per_channel[i])
+			median_per_channel.append(tmp_med)
+
+		for i in TPC_model_OBJ.peptide_or_gene_master_table_zeros_removed:
+			for j in xrange(0,len(TPC_model_OBJ.peptide_or_gene_master_table[i])):
+				for jj in xrange(0,len(TPC_model_OBJ.peptide_or_gene_master_table[i][j])):
+					TPC_model_OBJ.peptide_or_gene_master_table[i][j][jj] = float(TPC_model_OBJ.peptide_or_gene_master_table[i][j][jj]) / float(median_per_channel[jj])
+		'''
+
+
+
+
+	def	Log2Transform(self, TPC_model_OBJ):
+		for gene in TPC_model_OBJ.peptide_or_gene_master_table_zeros_removed:
+			for rep in xrange(0,len(TPC_model_OBJ.peptide_or_gene_master_table[gene])):
+				for channel in xrange(0,len(TPC_model_OBJ.peptide_or_gene_master_table[gene][rep])):
+					TPC_model_OBJ.peptide_or_gene_master_table[gene][rep][channel] = math.log( float(TPC_model_OBJ.peptide_or_gene_master_table[gene][rep][channel]) , 2)
+
+	def	Log2TransformPlusOne(self, TPC_model_OBJ):
+		for gene in TPC_model_OBJ.peptide_or_gene_master_table_zeros_removed:
+			for rep in xrange(0,len(TPC_model_OBJ.peptide_or_gene_master_table[gene])):
+				for channel in xrange(0,len(TPC_model_OBJ.peptide_or_gene_master_table[gene][rep])):
+					TPC_model_OBJ.peptide_or_gene_master_table[gene][rep][channel] = math.log( float(TPC_model_OBJ.peptide_or_gene_master_table[gene][rep][channel])  + 1.0, 2)
+
+	def	CalculateTTest(statistics_table_TTest, col_group_1, col_group_2, TPC_model_OBJ):
+		######### peptide or gene master table ##########
+		######### rep_1 channel 1 2 3 ##########
+		######### rep_2 channel 1 2 3 ##########
+		######### rep_3 channel 1 2 3 ##########
+		for i in peptide_or_gene_master_table_zeros_removed:
+			tmp_list_1 = []
+			tmp_list_2 = []
+			for j in xrange(0,len(peptide_or_gene_master_table_zeros_removed[i])):
+				tmp_list_1.append(peptide_or_gene_master_table_zeros_removed[i][j][col_group_1])
+				tmp_list_2.append(peptide_or_gene_master_table_zeros_removed[i][j][col_group_2])
+			#print len(tmp_list_1), len(tmp_list_2), tmp_list_1, tmp_list_2
+			ttest_val, two_tail_pvalue = scipy.stats.ttest_ind(tmp_list_1,tmp_list_2, equal_var = True)
+			#ttest_val, two_tail_pvalue = scipy.stats.ttest_ind(tmp_list_1,tmp_list_2, equal_var = False)
+			#print ttest_val, two_tail_pvalue, "~", tmp_list_1, tmp_list_2
+			statistics_table_TTest[i] = [ttest_val, two_tail_pvalue]
+			#statistics_table_TTest[i] = [ttest_val, -math.log(two_tail_pvalue,10)]
+
+
+	def	CalculateTTestFromList(self, TPC_model_OBJ):
+		######### peptide or gene master table ##########
+		######### rep_1 channel 1 2 3 ##########
+		######### rep_2 channel 1 2 3 ##########
+		######### rep_3 channel 1 2 3 ##########
+		for gene in TPC_model_OBJ.peptide_or_gene_master_table_zeros_removed:
+			tmp_list_1 = []
+			tmp_list_2 = []
+			for rep in xrange(0,len(TPC_model_OBJ.peptide_or_gene_master_table_zeros_removed[gene])):
+				for channel in xrange(0,len(TPC_model_OBJ.group_1_list)):
+					tmp_list_1.append(TPC_model_OBJ.peptide_or_gene_master_table_zeros_removed[gene][rep][int(TPC_model_OBJ.group_1_list[channel])-1])
+				for channel in xrange(0,len(TPC_model_OBJ.group_2_list)):
+					tmp_list_2.append(TPC_model_OBJ.peptide_or_gene_master_table_zeros_removed[gene][rep][int(TPC_model_OBJ.group_2_list[channel])-1])
+			#print len(tmp_list_1), len(tmp_list_2), tmp_list_1, tmp_list_2
+			ttest_val, two_tail_pvalue = scipy.stats.ttest_ind(tmp_list_1,tmp_list_2, equal_var = True)
+			#ttest_val, two_tail_pvalue = scipy.stats.ttest_ind(tmp_list_1,tmp_list_2, equal_var = False)
+			#print ttest_val, two_tail_pvalue, "~", tmp_list_1, tmp_list_2
+			TPC_model_OBJ.statistics_table_TTest[gene] = [ttest_val, two_tail_pvalue]
+			#statistics_table_TTest[i] = [ttest_val, -math.log(two_tail_pvalue,10)]
+
+	def	CalculateFoldChange(statistics_table_fold_change,col_denominator,col_compare, TPC_model_OBJ):
+		for gene in peptide_or_gene_master_table_zeros_removed:
+			tmp_list_1 = []
+			tmp_list_2 = []
+			for rep in xrange(0,len(peptide_or_gene_master_table_zeros_removed[gene])):
+				tmp_list_1.append(peptide_or_gene_master_table_zeros_removed[gene][rep][col_denominator])
+				tmp_list_2.append(peptide_or_gene_master_table_zeros_removed[gene][rep][col_compare])
+
+			tmp_median_1 = np.median(tmp_list_1)
+			tmp_median_2 = np.median(tmp_list_2)
+			#print tmp_list_1, tmp_median_1,  tmp_list_2, tmp_median_2,  tmp_median_2 / tmp_median_1
+			statistics_table_fold_change[gene] = tmp_median_2 / tmp_median_1
+
+	def	CalculateFoldChangeFromList(self, TPC_model_OBJ):
+		for gene in TPC_model_OBJ.peptide_or_gene_master_table_zeros_removed:
+			tmp_list_1 = []
+			tmp_list_2 = []
+			for rep in xrange(0,len(TPC_model_OBJ.peptide_or_gene_master_table_zeros_removed[gene])):
+				for group in xrange(0,len(TPC_model_OBJ.group_1_list)):
+					tmp_list_1.append(TPC_model_OBJ.peptide_or_gene_master_table_zeros_removed[gene][rep][int(TPC_model_OBJ.group_1_list[group])-1])
+				for group in xrange(0,len(TPC_model_OBJ.group_2_list)):
+					tmp_list_2.append(TPC_model_OBJ.peptide_or_gene_master_table_zeros_removed[gene][rep][int(TPC_model_OBJ.group_2_list[group])-1])
+
+			tmp_median_1 = np.median(tmp_list_1)
+			tmp_median_2 = np.median(tmp_list_2)
+			#print tmp_list_1, tmp_median_1,  tmp_list_2, tmp_median_2,  tmp_median_2 / tmp_median_1
+			if tmp_median_1 == 0.0:
+				tmp_median_1 = 0.1
+			if tmp_median_2 == 0.0:
+				tmp_median_2 = 0.1
+			TPC_model_OBJ.statistics_table_fold_change[gene] = tmp_median_2 / tmp_median_1
+			#if i == "EYA3":
+			#	print "2222", tmp_list_1, tmp_list_2
+			#	print "111111", tmp_median_1, tmp_median_2, statistics_table_fold_change[i]
+
+	def	ObtainMedianAcrossReplicates(self, TPC_model_OBJ):
+		######### peptide or gene median abundence table ##########
+		######### gene channel 1 2 3 ##########
+		for gene in TPC_model_OBJ.peptide_or_gene_master_table_zeros_removed:
+			tmp_list = []
+			for channel in xrange(0,TPC_model_OBJ.Num_channels):
+				tmp_list.append(0.0)
+			TPC_model_OBJ.peptide_or_gene_master_table_median_represent[gene] = tmp_list
+		for gene in TPC_model_OBJ.peptide_or_gene_master_table_zeros_removed:
+			for channel in xrange(0,TPC_model_OBJ.Num_channels):
+				tmp_list = []			
+				for rep in xrange(0,TPC_model_OBJ.Num_replicate):
+					tmp_list.append(TPC_model_OBJ.peptide_or_gene_master_table_zeros_removed[gene][rep][channel])
+				tmp_median = np.median(tmp_list)
+				TPC_model_OBJ.peptide_or_gene_master_table_median_represent[gene][channel] = tmp_median
 
 
 	def p_adjust_bh(p, TPC_model_OBJ):
@@ -228,7 +545,6 @@ class TransPipelineController:
 	    - `p_values`: a list or iterable of p-values sorted in ascending
 	      order
 	    - `num_total_tests`: the total number of tests (p-values)
-
 	    '''
 	    prev_bh_value = 0
 	    for i, p_value in enumerate(p_values):
@@ -291,228 +607,6 @@ class TransPipelineController:
 		#print pep_str
 		return pep_str
 
-	def	RemoveNonIdentifiedEntriesSILAC(self, TPC_model_OBJ):
-		for i in TPC_model_OBJ.peptide_or_gene_master_table:
-			cnt_zero = 0
-			tmp_check_light_zero = -1
-			for j in xrange(0,len(TPC_model_OBJ.peptide_or_gene_master_table[i])):
-				tmp_check_zero = sum(TPC_model_OBJ.peptide_or_gene_master_table[i][j])
-				if tmp_check_zero == 0.0:
-					cnt_zero += 1
-				# if light channel abundence value is 0 we skip it, because we are going to normalize by light channel
-				if float(TPC_model_OBJ.peptide_or_gene_master_table[i][j][0]) == 0.0:
-					tmp_check_light_zero = 1
-			#if cnt_zero < Num_replicate-1 and tmp_check_light_zero == -1:
-			if cnt_zero == 0 and tmp_check_light_zero == -1:
-				TPC_model_OBJ.peptide_or_gene_master_table_zeros_removed[i] = TPC_model_OBJ.peptide_or_gene_master_table[i]
-
-	def	RemoveNonIdentifiedEntriesTMT(self, TPC_model_OBJ):
-		for i in TPC_model_OBJ.peptide_or_gene_master_table:
-			cnt_zero = 0
-			tmp_check_light_zero = -1
-			for j in xrange(0,len(TPC_model_OBJ.peptide_or_gene_master_table[i])):
-				tmp_check_zero = sum(TPC_model_OBJ.peptide_or_gene_master_table[i][j])
-				if TPC_model_OBJ.result_file_names_and_channels[0][1] == -1 and tmp_check_zero == 1.0:
-					cnt_zero += 1
-				elif tmp_check_zero == 0.0:
-					cnt_zero += 1
-				# if the first channel abundence value is 0 we skip it, because we are going to normalize by the first channel
-				if float(TPC_model_OBJ.peptide_or_gene_master_table[i][j][0]) == 0.0:
-					tmp_check_light_zero = 1
-			#if cnt_zero < Num_replicate-1 and tmp_check_light_zero == -1:
-			if cnt_zero == 0 and tmp_check_light_zero == -1:
-				TPC_model_OBJ.peptide_or_gene_master_table_zeros_removed[i] = TPC_model_OBJ.peptide_or_gene_master_table[i]
-
-	def	SILACNormalization(self, TPC_model_OBJ):
-		# Divide by light for each row
-		for i in TPC_model_OBJ.peptide_or_gene_master_table_zeros_removed:
-			for j in xrange(0,len(TPC_model_OBJ.peptide_or_gene_master_table[i])):
-				tmp_norm = float(TPC_model_OBJ.peptide_or_gene_master_table[i][j][0])
-				for jj in xrange(0,len(TPC_model_OBJ.peptide_or_gene_master_table[i][j])):
-					TPC_model_OBJ.peptide_or_gene_master_table[i][j][jj] = float(TPC_model_OBJ.peptide_or_gene_master_table[i][j][jj]) / tmp_norm
-		#print "after ", TPC_model_OBJ.peptide_or_gene_master_table["6321766"]
-
-		# Divide by median for each col
-		tmp_all_abun_per_channel = []
-		for i in xrange(0,TPC_model_OBJ.Num_channels):
-			tmp_empty = []
-			tmp_all_abun_per_channel.append(tmp_empty)
-		for i in TPC_model_OBJ.peptide_or_gene_master_table_zeros_removed:
-			for j in xrange(0,len(TPC_model_OBJ.peptide_or_gene_master_table[i])):
-				for jj in xrange(0,len(TPC_model_OBJ.peptide_or_gene_master_table[i][j])):
-					tmp_all_abun_per_channel[jj].append(TPC_model_OBJ.peptide_or_gene_master_table[i][j][jj])
-		median_per_channel = []
-		for i in xrange(0,TPC_model_OBJ.Num_channels):
-			tmp_med = np.median(tmp_all_abun_per_channel[i])
-			#tmp_med = np.mean(tmp_all_abun_per_channel[i])
-			median_per_channel.append(tmp_med)
-		#print "median_per_channel",median_per_channel
-
-		for i in TPC_model_OBJ.peptide_or_gene_master_table_zeros_removed:
-			for j in xrange(0,len(TPC_model_OBJ.peptide_or_gene_master_table[i])):
-				for jj in xrange(0,len(TPC_model_OBJ.peptide_or_gene_master_table[i][j])):
-					TPC_model_OBJ.peptide_or_gene_master_table[i][j][jj] = float(TPC_model_OBJ.peptide_or_gene_master_table[i][j][jj]) / float(median_per_channel[jj])
-
-	def	TMTNormalization(self, TPC_model_OBJ):
-		# Divide by the first channel for each row
-		for i in TPC_model_OBJ.peptide_or_gene_master_table_zeros_removed:
-			for j in xrange(0,len(TPC_model_OBJ.peptide_or_gene_master_table[i])):
-				#print TPC_model_OBJ.peptide_or_gene_master_table[i][j]
-
-				#this is dividing by first channel
-				#tmp_norm = float(TPC_model_OBJ.peptide_or_gene_master_table[i][j][0])
-
-				#this is dividing by median across channel
-				tmp_norm_list = []
-				for jj in xrange(0,len(TPC_model_OBJ.peptide_or_gene_master_table[i][j])):
-					tmp_norm_list.append(float(TPC_model_OBJ.peptide_or_gene_master_table[i][j][jj]))
-				tmp_norm = np.median(tmp_norm_list)
-
-				if tmp_norm == 0.0:
-					tmp_norm = 0.1
-				for jj in xrange(0,len(TPC_model_OBJ.peptide_or_gene_master_table[i][j])):
-					TPC_model_OBJ.peptide_or_gene_master_table[i][j][jj] = float(TPC_model_OBJ.peptide_or_gene_master_table[i][j][jj]) / tmp_norm
-
-		# Calculate median for each col
-		tmp_all_abun_per_channel = []
-		for i in xrange(0,TPC_model_OBJ.Num_channels):
-			tmp_empty = []
-			tmp_all_abun_per_channel.append(tmp_empty)
-		for i in TPC_model_OBJ.peptide_or_gene_master_table_zeros_removed:
-			for j in xrange(0,len(TPC_model_OBJ.peptide_or_gene_master_table[i])):
-				for jj in xrange(0,len(TPC_model_OBJ.peptide_or_gene_master_table[i][j])):
-					tmp_all_abun_per_channel[jj].append(TPC_model_OBJ.peptide_or_gene_master_table[i][j][jj])
-		median_per_channel = []
-		for i in xrange(0,TPC_model_OBJ.Num_channels):
-			tmp_med = np.median(tmp_all_abun_per_channel[i])
-			#tmp_med = np.mean(tmp_all_abun_per_channel[i])
-			median_per_channel.append(tmp_med)
-
-		# Divide by median for each col
-		for i in TPC_model_OBJ.peptide_or_gene_master_table_zeros_removed:
-			for j in xrange(0,len(TPC_model_OBJ.peptide_or_gene_master_table[i])):
-				for jj in xrange(0,len(TPC_model_OBJ.peptide_or_gene_master_table[i][j])):
-					TPC_model_OBJ.peptide_or_gene_master_table[i][j][jj] = float(TPC_model_OBJ.peptide_or_gene_master_table[i][j][jj]) / float(median_per_channel[jj])
-
-
-
-
-
-	def	Log2Transform(self, TPC_model_OBJ):
-		# Log2 transform
-		for i in TPC_model_OBJ.peptide_or_gene_master_table_zeros_removed:
-			for j in xrange(0,len(TPC_model_OBJ.peptide_or_gene_master_table[i])):
-				for jj in xrange(0,len(TPC_model_OBJ.peptide_or_gene_master_table[i][j])):
-					TPC_model_OBJ.peptide_or_gene_master_table[i][j][jj] = math.log( float(TPC_model_OBJ.peptide_or_gene_master_table[i][j][jj]) , 2)
-
-
-	def	Log2TransformPlusOne(self, TPC_model_OBJ):
-		# Log2 transform
-		for i in TPC_model_OBJ.peptide_or_gene_master_table_zeros_removed:
-			for j in xrange(0,len(TPC_model_OBJ.peptide_or_gene_master_table[i])):
-				for jj in xrange(0,len(TPC_model_OBJ.peptide_or_gene_master_table[i][j])):
-					TPC_model_OBJ.peptide_or_gene_master_table[i][j][jj] = math.log( float(TPC_model_OBJ.peptide_or_gene_master_table[i][j][jj]) + 1.0 , 2)
-
-
-	def	CalculateTTest_old(statistics_table_TTest, col_group_1, col_group_2, TPC_model_OBJ):
-		for i in peptide_or_gene_master_table_zeros_removed:
-			tmp_list_1 = []
-			tmp_list_2 = []
-			for j in xrange(0,len(peptide_or_gene_master_table_zeros_removed[i])):
-				tmp_list_1.append(peptide_or_gene_master_table_zeros_removed[i][j][col_group_1])
-				tmp_list_2.append(peptide_or_gene_master_table_zeros_removed[i][j][col_group_2])
-
-			ttest_val, two_tail_pvalue = scipy.stats.ttest_ind(tmp_list_1,tmp_list_2, equal_var = False)
-			#print ttest_val, two_tail_pvalue, "~", tmp_list_1, tmp_list_2
-			statistics_table_TTest[i] = [ttest_val, two_tail_pvalue]
-			#statistics_table_TTest[i] = [ttest_val, -math.log(two_tail_pvalue,10)]
-
-	def	CalculateTTest(statistics_table_TTest, col_group_1, col_group_2, TPC_model_OBJ):
-		######### peptide or gene master table ##########
-		######### rep_1 channel 1 2 3 ##########
-		######### rep_2 channel 1 2 3 ##########
-		######### rep_3 channel 1 2 3 ##########
-		for i in peptide_or_gene_master_table_zeros_removed:
-			tmp_list_1 = []
-			tmp_list_2 = []
-			for j in xrange(0,len(peptide_or_gene_master_table_zeros_removed[i])):
-				tmp_list_1.append(peptide_or_gene_master_table_zeros_removed[i][j][col_group_1])
-				tmp_list_2.append(peptide_or_gene_master_table_zeros_removed[i][j][col_group_2])
-			#print len(tmp_list_1), len(tmp_list_2), tmp_list_1, tmp_list_2
-			ttest_val, two_tail_pvalue = scipy.stats.ttest_ind(tmp_list_1,tmp_list_2, equal_var = True)
-			#ttest_val, two_tail_pvalue = scipy.stats.ttest_ind(tmp_list_1,tmp_list_2, equal_var = False)
-			#print ttest_val, two_tail_pvalue, "~", tmp_list_1, tmp_list_2
-			statistics_table_TTest[i] = [ttest_val, two_tail_pvalue]
-			#statistics_table_TTest[i] = [ttest_val, -math.log(two_tail_pvalue,10)]
-
-
-	def	CalculateTTestFromList(self, TPC_model_OBJ):
-		######### peptide or gene master table ##########
-		######### rep_1 channel 1 2 3 ##########
-		######### rep_2 channel 1 2 3 ##########
-		######### rep_3 channel 1 2 3 ##########
-		for i in TPC_model_OBJ.peptide_or_gene_master_table_zeros_removed:
-			tmp_list_1 = []
-			tmp_list_2 = []
-			for j in xrange(0,len(TPC_model_OBJ.peptide_or_gene_master_table_zeros_removed[i])):
-				for k in xrange(0,len(TPC_model_OBJ.group_1_list)):
-					tmp_list_1.append(TPC_model_OBJ.peptide_or_gene_master_table_zeros_removed[i][j][int(TPC_model_OBJ.group_1_list[k])-1])
-				for k in xrange(0,len(TPC_model_OBJ.group_2_list)):
-					tmp_list_2.append(TPC_model_OBJ.peptide_or_gene_master_table_zeros_removed[i][j][int(TPC_model_OBJ.group_2_list[k])-1])
-			#print len(tmp_list_1), len(tmp_list_2), tmp_list_1, tmp_list_2
-			ttest_val, two_tail_pvalue = scipy.stats.ttest_ind(tmp_list_1,tmp_list_2, equal_var = True)
-			#ttest_val, two_tail_pvalue = scipy.stats.ttest_ind(tmp_list_1,tmp_list_2, equal_var = False)
-			#print ttest_val, two_tail_pvalue, "~", tmp_list_1, tmp_list_2
-			TPC_model_OBJ.statistics_table_TTest[i] = [ttest_val, two_tail_pvalue]
-			#statistics_table_TTest[i] = [ttest_val, -math.log(two_tail_pvalue,10)]
-
-
-	def	CalculateFoldChange(statistics_table_fold_change,col_denominator,col_compare, TPC_model_OBJ):
-		for i in peptide_or_gene_master_table_zeros_removed:
-			tmp_list_1 = []
-			tmp_list_2 = []
-			for j in xrange(0,len(peptide_or_gene_master_table_zeros_removed[i])):
-				tmp_list_1.append(peptide_or_gene_master_table_zeros_removed[i][j][col_denominator])
-				tmp_list_2.append(peptide_or_gene_master_table_zeros_removed[i][j][col_compare])
-
-			tmp_median_1 = np.median(tmp_list_1)
-			tmp_median_2 = np.median(tmp_list_2)
-			#print tmp_list_1, tmp_median_1,  tmp_list_2, tmp_median_2,  tmp_median_2 / tmp_median_1
-			statistics_table_fold_change[i] = tmp_median_2 / tmp_median_1
-	#		#if i == "6322215":
-	#		if i == "6321766":
-	#			print tmp_list_1, tmp_median_1
-	#			print tmp_list_2, tmp_median_2
-	#			print tmp_median_2 / tmp_median_1
-	#			print i, peptide_or_gene_master_table_zeros_removed[i]
-
-
-
-	def	CalculateFoldChangeFromList(self, TPC_model_OBJ):
-		for i in TPC_model_OBJ.peptide_or_gene_master_table_zeros_removed:
-			tmp_list_1 = []
-			tmp_list_2 = []
-			for j in xrange(0,len(TPC_model_OBJ.peptide_or_gene_master_table_zeros_removed[i])):
-				for k in xrange(0,len(TPC_model_OBJ.group_1_list)):
-					tmp_list_1.append(TPC_model_OBJ.peptide_or_gene_master_table_zeros_removed[i][j][int(TPC_model_OBJ.group_1_list[k])-1])
-				for k in xrange(0,len(TPC_model_OBJ.group_2_list)):
-					tmp_list_2.append(TPC_model_OBJ.peptide_or_gene_master_table_zeros_removed[i][j][int(TPC_model_OBJ.group_2_list[k])-1])
-
-			tmp_median_1 = np.median(tmp_list_1)
-			tmp_median_2 = np.median(tmp_list_2)
-			#print tmp_list_1, tmp_median_1,  tmp_list_2, tmp_median_2,  tmp_median_2 / tmp_median_1
-			if tmp_median_1 == 0.0:
-				tmp_median_1 = 0.1
-			if tmp_median_2 == 0.0:
-				tmp_median_2 = 0.1
-			TPC_model_OBJ.statistics_table_fold_change[i] = tmp_median_2 / tmp_median_1
-			
-			#if i == "EYA3":
-			#	print "2222", tmp_list_1, tmp_list_2
-			#	print "111111", tmp_median_1, tmp_median_2, statistics_table_fold_change[i]
-
-
-
 
 
 
@@ -527,7 +621,7 @@ class TransPipelineView:
 		pass
 
 	def	PrintTable(self, table_to_print, tmp_output_file_name):
-		printTableFile = open(tmp_output_file_name,'w')
+		printTableFile = open(tmp_output_file_name,'a')
 		#printTableFile.write('gene\tlog2FoldChange\tpvalue\n')
 		for i in table_to_print:
 			printTableFile.write(i)
@@ -550,11 +644,10 @@ class TransPipelineView:
 
 	def	PrintTablePValue(self, table_to_print, tmp_output_file_name):
 		printTableFile = open(tmp_output_file_name,'w')
-		#printTableFile.write('gene\tlog2FoldChange\tpvalue\n')
+		printTableFile.write('gene\tpvalue\n')
 		for i in table_to_print:
 			printTableFile.write(i)
-			for j in xrange(0,len(table_to_print[i])):
-				printTableFile.write("\t"+str(table_to_print[i][j]))
+			printTableFile.write("\t"+str(table_to_print[i][1]))
 			printTableFile.write('\n')
 		printTableFile.close()
 

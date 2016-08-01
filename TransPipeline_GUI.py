@@ -179,6 +179,21 @@ class TransPipelineGUI(Tkinter.Frame):
 				button_row_ind += 1
 			print 'Quantification_method:', self.Quantification_method
 		elif self.Quantification_method == 'TMT':
+			Tkinter.Label(top, text='Selected result files').grid(row=button_row_ind,column=1)
+			for j in xrange(0,self.Num_channels):
+				Tkinter.Label(top, text='Channel '+str(j+1)).grid(row=button_row_ind,column=j+2)
+			button_row_ind += 1
+			for i in xrange(0,self.Num_replicate):
+				Tkinter.Label(top, text='Rep '+str(i+1)+' abundence columns(0-based)').grid(row=button_row_ind,column=0)
+				Tkinter.Button(top, text='Rep file '+str(i+1), command=self.askRepResultFilename(i)).grid(row=button_row_ind,column=1)
+				Tkinter.Label(top, text=os.path.basename(self.tmp_result_file_names[i])).grid(row=button_row_ind,column=1)
+				tmp_list.append(str(self.tmp_rep_file_name))
+				for j in xrange(0,self.Num_channels):
+
+					self.tmp_channels[i][j] = Tkinter.Spinbox(top, from_=0, to=500, width=5)
+					self.tmp_channels[i][j].grid(row=button_row_ind,column=j+2)
+
+				button_row_ind += 1
 			print 'Quantification_method:', self.Quantification_method
 		else:
 			print 'Error! unknown Quantification_method:', self.Quantification_method
@@ -296,6 +311,7 @@ class TransPipelineGUI(Tkinter.Frame):
 if __name__=='__main__':
   root = Tkinter.Tk()
   TransPipelineGUI(root).pack()
+  root.wm_title("Center for Translational Proteomics analysis pipeline GUI")
   root.mainloop()
 
 
